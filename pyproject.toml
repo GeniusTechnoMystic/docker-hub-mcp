@@ -1,6 +1,6 @@
 [project]
 name = "docker-hub-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "MCP server for Docker Hub Image Stats — pulls, stars, search, batch lookup, publisher catalogs"
 authors = [{name = "GeniusTechnoMystic", email = "hermes@nousresearch.com"}]
 license = {text = "MIT"}
