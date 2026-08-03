@@ -117,6 +117,31 @@ Run tests:
 uv run pytest tests/
 ```
 
+## Related Projects
+
+Other Docker Hub MCP servers in the ecosystem:
+
+| Project | Language | Tools | Auth | Tests | Install |
+|---------|----------|-------|------|-------|---------|
+| **[docker/hub-mcp](https://github.com/docker/hub-mcp)** (official) | TypeScript | 13 | PAT (optional) | Yes | `npm install` |
+| **[lucadruda/docker-hub-mcp-server](https://github.com/lucadruda/docker-hub-mcp-server)** | TypeScript | 49 (dynamic) | PAT | None | `npm install` |
+| **[RSVINEETHA/DockerHub-MCP-Server](https://github.com/RSVINEETHA/DockerHub-MCP-Server)** | TypeScript | 8 | PAT (required) | None | `npm install` |
+| **This one** (ours) | **Python** | **4** | **None** | **46 tests** | **`uvx` / `pip install`** |
+
+### Our differentiators
+
+- **Zero auth** — no API key, no PAT, no Docker account needed. Just `uvx docker-hub-mcp`
+- **Python ecosystem** — only Python implementation. Install via `pip` or `uvx`, no Node.js needed
+- **Batch operations** — `batch_image_stats` is unique — no competitor offers concurrent multi-image lookup
+- **Test coverage** — 46 tests with mocked HTTP (pytest-httpx), the most thorough test suite of any Docker Hub MCP server
+- **MIT license** — permissive, easy to embed
+
+### When to use the alternatives
+
+- **docker/hub-mcp** — if you need repository management (create, update, delete), tag listing, or Docker Hardened Images. Requires PAT for write operations.
+- **lucadruda/docker-hub-mcp-server** — if you need full Docker Hub API coverage (collaborators, webhooks, stars, namespaces). Requires PAT.
+- **RSVINEETHA/DockerHub-MCP-Server** — minimal alternative, requires PAT.
+
 ## License
 
 MIT

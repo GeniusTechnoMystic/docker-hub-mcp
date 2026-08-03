@@ -27,3 +27,10 @@ This is a stdio-based MCP server. It reads JSON-RPC messages from stdin and writ
 - Keep `pyproject.toml` dependencies synced with `uv sync`
 - Bump version in `pyproject.toml` before tagging
 - Tag with `v*` triggers PyPI publish via CI
+
+## Related projects
+
+See README.md for full comparison. Key competitors:
+- [docker/hub-mcp](https://github.com/docker/hub-mcp) (official, 13 tools, TypeScript, 160★)
+- [lucadruda/docker-hub-mcp-server](https://github.com/lucadruda/docker-hub-mcp-server) (49 tools, TypeScript, PAT auth)
+- [RSVINEETHA/DockerHub-MCP-Server](https://github.com/RSVINEETHA/DockerHub-MCP-Server) (8 tools, TypeScript, PAT auth)
