@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from mcp.server import Server, ServerRequestContext
@@ -35,22 +37,75 @@ MAX_RETRIES = 3
 RETRY_DELAY = 1.0  # seconds
 BATCH_MAX = 100
 
+# ── shared HTTP client ─────────────────────────────────────────────────────────
+
+_shared_client: httpx.AsyncClient = httpx.AsyncClient(
+    limits=httpx.Limits(
+        max_keepalive_connections=10,
+        max_connections=20,
+        keepalive_expiry=30.0,
+    ),
+    timeout=httpx.Timeout(
+        connect=10.0,
+        read=15.0,
+        write=10.0,
+        pool=10.0,
+    ),
+)
+
+# ── validation ─────────────────────────────────────────────────────────────────
+
+VALID_IMAGE_SEGMENT = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
+
+
+def _validate_image_segment(name: str, label: str) -> str:
+    """Validate a single Docker Hub image name segment (namespace or repo).
+
+    Raises ValueError with a clear message if the segment is invalid.
+    """
+    if not name:
+        raise ValueError(f"{label} cannot be empty")
+    if len(name) > 128:
+        raise ValueError(f"{label} too long: {len(name)} chars (max 128)")
+    if not VALID_IMAGE_SEGMENT.fullmatch(name):
+        raise ValueError(
+            f"Invalid {label} '{name}': must match [a-z0-9]+(?:[._-][a-z0-9]+)*"
+        )
+    return name
+
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
 def _normalize_image(image: str) -> tuple[str, str]:
-    """Return (namespace, repo) for a Docker image reference."""
+    """Return (namespace, repo) for a Docker image reference.
+
+    Validates both segments against Docker Hub naming rules and URL-quotes them.
+    Raises ValueError if the image name is invalid.
+    """
+    if not image or not isinstance(image, str):
+        raise ValueError("Image name must be a non-empty string")
+    if image.count("/") > 1:
+        raise ValueError(
+            f"Invalid image name '{image}': too many path segments (expected 1 or 0 slashes)"
+        )
     parts = image.split("/")
     if len(parts) == 1:
-        return "library", parts[0]
-    return parts[0], parts[1]
+        namespace = "library"
+        repo = parts[0]
+    else:
+        namespace = parts[0]
+        repo = parts[1]
+    namespace = _validate_image_segment(namespace, "namespace")
+    repo = _validate_image_segment(repo, "repo")
+    return namespace, repo
 
 
 async def _fetch_json(
     client: httpx.AsyncClient, url: str, params: dict[str, Any] | None = None
 ) -> dict[str, Any] | list[dict[str, Any]] | None:
     """GET a URL and return parsed JSON, with basic retry logic."""
+    last_exc: Exception | None = None
     for attempt in range(MAX_RETRIES):
         try:
             resp = await client.get(url, params=params, timeout=15.0)
@@ -69,7 +124,10 @@ async def _fetch_json(
             last_exc = exc
             logger.warning("Request error on %s: %s", url, exc)
         await asyncio.sleep(RETRY_DELAY)
-    logger.error("All %d retries exhausted for %s", MAX_RETRIES, url)
+    logger.error(
+        "All %d retries exhausted for %s — last error: %s",
+        MAX_RETRIES, url, last_exc or "unknown (rate limited or empty response)",
+    )
     return None
 
 
@@ -108,8 +166,8 @@ def _fmt_num(n: Any) -> str:
     return str(n_int)
 
 
-def _text(content: str) -> CallToolResult | ListToolsResult:
-    """Wrap text in a ListToolsResult or CallToolResult (both have content field)."""
+def _text(content: str) -> list[TextContent]:
+    """Wrap text in a list of TextContent for MCP tool results."""
     return [TextContent(type="text", text=content)]
 
 
@@ -118,9 +176,8 @@ def _text(content: str) -> CallToolResult | ListToolsResult:
 
 async def get_image_stats_impl(image: str) -> str:
     namespace, repo = _normalize_image(image)
-    url = f"{DOCKER_HUB_BASE}/v2/repositories/{namespace}/{repo}"
-    async with httpx.AsyncClient() as client:
-        data = await _fetch_json(client, url)
+    url = f"{DOCKER_HUB_BASE}/v2/repositories/{quote(namespace, safe='')}/{quote(repo, safe='')}"
+    data = await _fetch_json(_shared_client, url)
     if not isinstance(data, dict):
         return f"Image '{image}' not found on Docker Hub."
     info = _extract_image_info(data)
@@ -146,30 +203,29 @@ async def search_images_impl(query: str, limit: int = 50) -> str:
     page = 1
     fetched = 0
 
-    async with httpx.AsyncClient() as client:
-        while fetched < limit:
-            params = {"query": query, "page": page, "page_size": min(limit - fetched, 50)}
-            data = await _fetch_json(client, f"{DOCKER_HUB_BASE}/v2/search/repositories", params)
-            if data is None:
+    while fetched < limit:
+        params = {"query": query, "page": page, "page_size": min(limit - fetched, 50)}
+        data = await _fetch_json(_shared_client, f"{DOCKER_HUB_BASE}/v2/search/repositories", params)
+        if data is None:
+            break
+        items = data.get("results", []) if isinstance(data, dict) else []
+        if not items:
+            break
+        for item in items:
+            results.append({
+                "name": item.get("repo_name", ""),
+                "namespace": item.get("repo_owner", "library") or "library",
+                "description": item.get("short_description", ""),
+                "pull_count": item.get("pull_count", 0),
+                "star_count": item.get("star_count", 0),
+                "is_official": item.get("is_official", False),
+                "is_automated": item.get("is_automated", False),
+                "last_updated": "",
+            })
+            fetched += 1
+            if fetched >= limit:
                 break
-            items = data.get("results", []) if isinstance(data, dict) else []
-            if not items:
-                break
-            for item in items:
-                results.append({
-                    "name": item.get("repo_name", ""),
-                    "namespace": item.get("repo_owner", "library") or "library",
-                    "description": item.get("short_description", ""),
-                    "pull_count": item.get("pull_count", 0),
-                    "star_count": item.get("star_count", 0),
-                    "is_official": item.get("is_official", False),
-                    "is_automated": item.get("is_automated", False),
-                    "last_updated": "",
-                })
-                fetched += 1
-                if fetched >= limit:
-                    break
-            page += 1
+        page += 1
 
     if not results:
         return f"No results found for '{query}'."
@@ -193,15 +249,14 @@ async def batch_image_stats_impl(images: list[str]) -> str:
         return "No images provided."
     images = images[:BATCH_MAX]
 
-    async with httpx.AsyncClient() as client:
-        async def _fetch_single(img: str) -> tuple[str, dict[str, Any] | None]:
-            namespace, repo = _normalize_image(img)
-            url = f"{DOCKER_HUB_BASE}/v2/repositories/{namespace}/{repo}"
-            data = await _fetch_json(client, url)
-            return img, (_extract_image_info(data) if isinstance(data, dict) else None)
+    async def _fetch_single(img: str) -> tuple[str, dict[str, Any] | None]:
+        namespace, repo = _normalize_image(img)
+        url = f"{DOCKER_HUB_BASE}/v2/repositories/{quote(namespace, safe='')}/{quote(repo, safe='')}"
+        data = await _fetch_json(_shared_client, url)
+        return img, (_extract_image_info(data) if isinstance(data, dict) else None)
 
-        tasks = [_fetch_single(img) for img in images]
-        results = await asyncio.gather(*tasks)
+    tasks = [_fetch_single(img) for img in images]
+    results = await asyncio.gather(*tasks)
 
     lines = [f"# Batch stats for {len(results)} images\n"]
     lines.append("| # | Image | Pulls | Stars | Official | Verified | Last Updated |")
@@ -225,24 +280,23 @@ async def get_publisher_images_impl(publisher: str, limit: int = 100) -> str:
     fetched = 0
     page_size = min(limit, 100)
 
-    async with httpx.AsyncClient() as client:
-        while fetched < limit:
-            url = f"{DOCKER_HUB_BASE}/v2/repositories/{publisher}"
-            params = {"page": page, "page_size": min(page_size, limit - fetched)}
-            data = await _fetch_json(client, url, params)
-            if data is None:
+    while fetched < limit:
+        url = f"{DOCKER_HUB_BASE}/v2/repositories/{quote(_validate_image_segment(publisher, 'publisher'), safe='')}"
+        params = {"page": page, "page_size": min(page_size, limit - fetched)}
+        data = await _fetch_json(_shared_client, url, params)
+        if data is None:
+            break
+        items = data.get("results", []) if isinstance(data, dict) else []
+        if not items:
+            break
+        for item in items:
+            info = _extract_image_info(item)
+            if info is not None:
+                results.append(info)
+            fetched += 1
+            if fetched >= limit:
                 break
-            items = data.get("results", []) if isinstance(data, dict) else []
-            if not items:
-                break
-            for item in items:
-                info = _extract_image_info(item)
-                if info is not None:
-                    results.append(info)
-                fetched += 1
-                if fetched >= limit:
-                    break
-            page += 1
+        page += 1
 
     if not results:
         return f"No images found for publisher '{publisher}'."
@@ -367,6 +421,11 @@ async def call_tool(
     try:
         result = await handler(**args)
         return CallToolResult(content=_text(result))
+    except ValueError as exc:
+        return CallToolResult(
+            content=_text(f"Invalid input for {name}: {exc}"),
+            isError=True,
+        )
     except Exception as exc:
         logger.exception("Tool %s failed", name)
         return CallToolResult(
@@ -386,11 +445,14 @@ server = Server(
 
 async def main_async() -> None:
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
-        )
+        try:
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options(),
+            )
+        finally:
+            await _shared_client.aclose()
 
 
 def main() -> None:
