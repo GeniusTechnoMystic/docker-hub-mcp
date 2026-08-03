@@ -105,6 +105,7 @@ async def _fetch_json(
     client: httpx.AsyncClient, url: str, params: dict[str, Any] | None = None
 ) -> dict[str, Any] | list[dict[str, Any]] | None:
     """GET a URL and return parsed JSON, with basic retry logic."""
+    last_exc: Exception | None = None
     for attempt in range(MAX_RETRIES):
         try:
             resp = await client.get(url, params=params, timeout=15.0)
@@ -123,7 +124,10 @@ async def _fetch_json(
             last_exc = exc
             logger.warning("Request error on %s: %s", url, exc)
         await asyncio.sleep(RETRY_DELAY)
-    logger.error("All %d retries exhausted for %s", MAX_RETRIES, url)
+    logger.error(
+        "All %d retries exhausted for %s — last error: %s",
+        MAX_RETRIES, url, last_exc or "unknown (rate limited or empty response)",
+    )
     return None
 
 
