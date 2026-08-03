@@ -1,0 +1,28 @@
+[project]
+name = "docker-hub-mcp"
+version = "0.1.0"
+description = "MCP server for Docker Hub Image Stats — pulls, stars, search, batch lookup, publisher catalogs"
+authors = [{name = "GeniusTechnoMystic", email = "hermes@nousresearch.com"}]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/GeniusTechnoMystic/docker-hub-mcp"
+Repository = "https://github.com/GeniusTechnoMystic/docker-hub-mcp"
+Issues = "https://github.com/GeniusTechnoMystic/docker-hub-mcp/issues"
+
+[project.scripts]
+docker-hub-mcp = "docker_hub_mcp.server:main"
+
+[tool.uv]
+package = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
