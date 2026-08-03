@@ -196,7 +196,7 @@ class TestText:
     """Tests for _text helper."""
 
     def test_returns_list_of_text_content(self):
-        from docker_hub_mcp.server import _text, TextContent
+        from docker_hub_mcp.server import TextContent, _text
         result = _text("hello")
         assert isinstance(result, list)
         assert len(result) == 1
@@ -260,7 +260,7 @@ class TestFetchJson:
 
     @pytest.mark.httpx_mock(can_send_already_matched_responses=True)
     async def test_429_all_retries_exhausted(self, httpx_mock):
-        from docker_hub_mcp.server import _fetch_json, MAX_RETRIES
+        from docker_hub_mcp.server import MAX_RETRIES, _fetch_json
         url = "https://hub.docker.com/v2/repositories/library/nginx"
         for _ in range(MAX_RETRIES):
             httpx_mock.add_response(url=url, status_code=429)
@@ -270,7 +270,7 @@ class TestFetchJson:
 
     @pytest.mark.httpx_mock(can_send_already_matched_responses=True)
     async def test_5xx_retries_exhausted(self, httpx_mock):
-        from docker_hub_mcp.server import _fetch_json, MAX_RETRIES
+        from docker_hub_mcp.server import MAX_RETRIES, _fetch_json
         url = "https://hub.docker.com/v2/repositories/library/nginx"
         for _ in range(MAX_RETRIES):
             httpx_mock.add_response(url=url, status_code=500)
@@ -346,7 +346,7 @@ class TestGetImageStatsImpl:
 
     @pytest.mark.httpx_mock(can_send_already_matched_responses=True)
     async def test_retry_exhaustion_returns_not_found(self, httpx_mock):
-        from docker_hub_mcp.server import get_image_stats_impl, MAX_RETRIES
+        from docker_hub_mcp.server import MAX_RETRIES, get_image_stats_impl
         url = "https://hub.docker.com/v2/repositories/library/nginx"
         for _ in range(MAX_RETRIES):
             httpx_mock.add_response(url=url, status_code=429)
