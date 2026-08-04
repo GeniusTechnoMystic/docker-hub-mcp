@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 from typing import Any
 from urllib.parse import quote
@@ -34,7 +35,8 @@ logger = logging.getLogger("docker-hub-mcp")
 
 DOCKER_HUB_BASE = "https://hub.docker.com"
 MAX_RETRIES = 3
-RETRY_DELAY = 1.0  # seconds
+BASE_BACKOFF = 1.0   # seconds
+MAX_BACKOFF = 30.0   # seconds — cap for exponential growth
 BATCH_MAX = 100
 
 # ── shared HTTP client ─────────────────────────────────────────────────────────
@@ -101,32 +103,114 @@ def _normalize_image(image: str) -> tuple[str, str]:
     return namespace, repo
 
 
+# ── Retry / backoff helpers ──────────────────────────────────────────────────
+
+
+def _sleep_with_jitter(base: float, attempt: int, cap: float = MAX_BACKOFF) -> float:
+    """Full Jitter (AWS recommended): random(0, min(cap, base * 2^attempt)).
+
+    Per Marc Brooker's canonical analysis (AWS Architecture Blog, 2015):
+    - Full Jitter has the lowest server load and fastest completion time
+    - No state needed between retries
+    - Maximum randomization prevents thundering herd synchronization
+    - See: http-backoff-algorithms.md §3a
+    """
+    temp = min(cap, base * (2**attempt))
+    return random.uniform(0, temp)
+
+
+def _extract_retry_after(resp: httpx.Response) -> float | None:
+    """Extract Retry-After header value (seconds or HTTP-date)."""
+    val = resp.headers.get("Retry-After")
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except ValueError:
+        # Could be an HTTP-date — fall back to exponential backoff
+        return None
+
+
 async def _fetch_json(
     client: httpx.AsyncClient, url: str, params: dict[str, Any] | None = None
 ) -> dict[str, Any] | list[dict[str, Any]] | None:
-    """GET a URL and return parsed JSON, with basic retry logic."""
+    """GET a URL and return parsed JSON, with retry/backoff for transient errors.
+
+    Retries up to *MAX_RETRIES* times on 429 (rate-limited) or 5xx
+    (server error) responses, using exponential backoff with jitter.
+    Honors the ``Retry-After`` header when present.
+    """
     last_exc: Exception | None = None
     for attempt in range(MAX_RETRIES):
         try:
             resp = await client.get(url, params=params, timeout=15.0)
-            if resp.status_code == 429:
-                logger.warning("Rate limited on %s, retrying...", url)
-                await asyncio.sleep(RETRY_DELAY * (attempt + 1))
-                continue
-            resp.raise_for_status()
-            return resp.json()
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return None  # not found — not retryable
-            last_exc = exc
-            logger.warning("HTTP error on %s: %s", url, exc)
         except httpx.RequestError as exc:
             last_exc = exc
-            logger.warning("Request error on %s: %s", url, exc)
-        await asyncio.sleep(RETRY_DELAY)
+            if attempt < MAX_RETRIES - 1:
+                delay = _sleep_with_jitter(BASE_BACKOFF, attempt)
+                logger.warning(
+                    "Request error on attempt %d/%d: %s — retrying in %.1fs",
+                    attempt + 1, MAX_RETRIES, exc, delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            break
+
+        if resp.status_code == 429:
+            if attempt < MAX_RETRIES - 1:
+                retry_after = _extract_retry_after(resp) or _sleep_with_jitter(
+                    BASE_BACKOFF, attempt
+                )
+                logger.warning(
+                    "Rate limited (429) on attempt %d/%d — retrying in %.1fs",
+                    attempt + 1, MAX_RETRIES, retry_after,
+                )
+                await asyncio.sleep(retry_after)
+                continue
+            logger.error(
+                "Rate limited (429) on final attempt %d/%d for %s",
+                attempt + 1, MAX_RETRIES, url,
+            )
+            return None
+
+        if 500 <= resp.status_code < 600:
+            if attempt < MAX_RETRIES - 1:
+                delay = _sleep_with_jitter(BASE_BACKOFF, attempt)
+                logger.warning(
+                    "Server error %d on attempt %d/%d — retrying in %.1fs",
+                    resp.status_code, attempt + 1, MAX_RETRIES, delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            logger.error(
+                "Server error %d on final attempt %d/%d for %s",
+                resp.status_code, attempt + 1, MAX_RETRIES, url,
+            )
+            return None
+
+        if resp.status_code == 404:
+            return None  # not found — not retryable
+
+        # Any other status code — raise so caller can handle it
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            last_exc = exc
+            if attempt < MAX_RETRIES - 1:
+                delay = _sleep_with_jitter(BASE_BACKOFF, attempt)
+                logger.warning(
+                    "HTTP error %d on attempt %d/%d — retrying in %.1fs",
+                    resp.status_code, attempt + 1, MAX_RETRIES, delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            break
+
+        return resp.json()
+
     logger.error(
         "All %d retries exhausted for %s — last error: %s",
-        MAX_RETRIES, url, last_exc or "unknown (rate limited or empty response)",
+        MAX_RETRIES, url, last_exc or "unknown",
     )
     return None
 
