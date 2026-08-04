@@ -297,6 +297,52 @@ class TestFetchJson:
             result = await _fetch_json(client, url)
         assert result == {"name": "nginx"}
 
+    @pytest.mark.httpx_mock(can_send_already_matched_responses=True)
+    async def test_429_with_retry_after_header(self, httpx_mock):
+        """Honors Retry-After header on 429."""
+        from docker_hub_mcp.server import _fetch_json
+        url = "https://hub.docker.com/v2/repositories/library/nginx"
+        httpx_mock.add_response(url=url, status_code=429, headers={"Retry-After": "0.01"})
+        httpx_mock.add_response(url=url, json={"name": "nginx"})
+        async with httpx.AsyncClient() as client:
+            result = await _fetch_json(client, url)
+        assert result == {"name": "nginx"}
+
+
+class TestBackoffHelpers:
+    """Tests for _sleep_with_jitter and _extract_retry_after."""
+
+    def test_sleep_with_jitter_bounds(self):
+        from docker_hub_mcp.server import _sleep_with_jitter, BASE_BACKOFF, MAX_BACKOFF
+        for attempt in range(10):
+            delay = _sleep_with_jitter(BASE_BACKOFF, attempt)
+            cap = min(MAX_BACKOFF, BASE_BACKOFF * (2**attempt))
+            assert 0 <= delay <= cap, (
+                f"attempt {attempt}: delay {delay} out of bounds [0, {cap}]"
+            )
+
+    def test_sleep_with_jitter_capped(self):
+        from docker_hub_mcp.server import _sleep_with_jitter, BASE_BACKOFF, MAX_BACKOFF
+        # At high attempts, cap should be MAX_BACKOFF
+        delay = _sleep_with_jitter(BASE_BACKOFF, 20)
+        assert 0 <= delay <= MAX_BACKOFF
+
+    def test_extract_retry_after_seconds(self):
+        from docker_hub_mcp.server import _extract_retry_after
+        resp = httpx.Response(429, headers={"Retry-After": "5"})
+        assert _extract_retry_after(resp) == 5.0
+
+    def test_extract_retry_after_missing(self):
+        from docker_hub_mcp.server import _extract_retry_after
+        resp = httpx.Response(429)
+        assert _extract_retry_after(resp) is None
+
+    def test_extract_retry_after_invalid_date(self):
+        from docker_hub_mcp.server import _extract_retry_after
+        # HTTP-date string — should return None (fallback to jitter)
+        resp = httpx.Response(429, headers={"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"})
+        assert _extract_retry_after(resp) is None
+
 
 # ── handler output formatting (mocked HTTP) ───────────────────────────────────
 
