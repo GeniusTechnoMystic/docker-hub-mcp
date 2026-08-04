@@ -313,7 +313,7 @@ class TestBackoffHelpers:
     """Tests for _sleep_with_jitter and _extract_retry_after."""
 
     def test_sleep_with_jitter_bounds(self):
-        from docker_hub_mcp.server import _sleep_with_jitter, BASE_BACKOFF, MAX_BACKOFF
+        from docker_hub_mcp.server import BASE_BACKOFF, MAX_BACKOFF, _sleep_with_jitter
         for attempt in range(10):
             delay = _sleep_with_jitter(BASE_BACKOFF, attempt)
             cap = min(MAX_BACKOFF, BASE_BACKOFF * (2**attempt))
@@ -322,7 +322,7 @@ class TestBackoffHelpers:
             )
 
     def test_sleep_with_jitter_capped(self):
-        from docker_hub_mcp.server import _sleep_with_jitter, BASE_BACKOFF, MAX_BACKOFF
+        from docker_hub_mcp.server import BASE_BACKOFF, MAX_BACKOFF, _sleep_with_jitter
         # At high attempts, cap should be MAX_BACKOFF
         delay = _sleep_with_jitter(BASE_BACKOFF, 20)
         assert 0 <= delay <= MAX_BACKOFF
