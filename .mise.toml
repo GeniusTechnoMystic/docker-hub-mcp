@@ -3,4 +3,4 @@ python = "3.12"
 uv = "latest"
 
 [settings]
-python.venv_auto = true
+python.uv_venv_auto = true
